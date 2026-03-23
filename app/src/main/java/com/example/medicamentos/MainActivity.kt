@@ -1,5 +1,6 @@
 package com.example.medicamentos
 
+import android.media.AudioManager
 import android.os.*
 import android.speech.tts.TextToSpeech
 import android.content.Context
@@ -9,15 +10,19 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.google.accompanist.permissions.*
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -27,14 +32,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private var tts: TextToSpeech? = null
     private lateinit var vibrator: Vibrator
+    private lateinit var audioManager: AudioManager
     private var detectedText = ""
     private var isVibrating = false
-    private var isTtsReady = false // Control para saber si el motor de voz cargó
+    private var isTtsReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Configuración del vibrador según la versión de Android
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
             vm.defaultVibrator
@@ -42,17 +48,45 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         }
 
-        // Inicializar TTS
         tts = TextToSpeech(this, this)
 
         setContent {
-            Box(modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { leerDatos() },
-                    onDoubleTap = { tts?.stop() }
-                )
-            }) {
+            MainScreenWrapper()
+        }
+    }
+
+    @OptIn(ExperimentalPermissionsApi::class)
+    @Composable
+    fun MainScreenWrapper() {
+        val cameraPermissionState = rememberPermissionState(android.Manifest.permission.CAMERA)
+
+        if (cameraPermissionState.status.isGranted) {
+            Box(modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { leerDatos() },
+                        onDoubleTap = { tts?.stop() }
+                    )
+                }) {
                 CameraPreview { text -> gestionarVibracion(text) }
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(20.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Se necesita la cámara para identificar medicamentos.")
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(onClick = { cameraPermissionState.launchPermissionRequest() }) {
+                    Text("Permitir cámara")
+                }
+            }
+
+            // Solo lanzamos la petición visual aquí, la voz la maneja onResume
+            LaunchedEffect(Unit) {
+                cameraPermissionState.launchPermissionRequest()
             }
         }
     }
@@ -60,36 +94,58 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale("es", "ES")
-            tts?.setSpeechRate(0.9f) // Velocidad global base
+            tts?.setSpeechRate(0.85f)
             isTtsReady = true
-            saludarUsuario()
+            // Intentar hablar inmediatamente después de inicializar
+            gestionarMensajesDeInicio()
         }
     }
 
-    // Se ejecuta cada vez que el usuario entra o regresa a la app
     override fun onResume() {
         super.onResume()
+        ajustarVolumenAlto()
         if (isTtsReady) {
-            saludarUsuario()
+            gestionarMensajesDeInicio()
         }
     }
 
-    private fun saludarUsuario() {
-        tts?.speak("Medicamentos lista", TextToSpeech.QUEUE_FLUSH, null, "saludo_id")
+    override fun onPause() {
+        // CORTE TOTAL DE AUDIO AL SALIR
+        tts?.stop()
+        detenerVibracion()
+        super.onPause()
+    }
+
+    private fun gestionarMensajesDeInicio() {
+        val tienePermiso = ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (tienePermiso) {
+            tts?.speak("Medicamentos lista", TextToSpeech.QUEUE_FLUSH, null, "saludo_id")
+        } else {
+            val aviso = "Esta aplicación necesita permiso para usar la cámara. Por favor, pide a alguien de confianza que acepte los permisos en pantalla para comenzar."
+            // Usamos un pequeño delay manual para que el audio no se corte
+            Handler(Looper.getMainLooper()).postDelayed({
+                tts?.speak(aviso, TextToSpeech.QUEUE_FLUSH, null, "permiso_aviso_id")
+            }, 500)
+        }
+    }
+
+    private fun ajustarVolumenAlto() {
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val vol90 = (maxVol * 0.9).toInt()
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, vol90, 0)
     }
 
     private fun gestionarVibracion(text: String) {
         if (text.isNotBlank()) {
             detectedText = text
-
             if (!isVibrating) {
                 isVibrating = true
-                val pattern = longArrayOf(0, 1000, 1000) // 1s vibra, 1s pausa
+                val pattern = longArrayOf(0, 800, 800)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     vibrator.vibrate(VibrationEffect.createWaveform(pattern, 0))
                 } else {
-                    @Suppress("DEPRECATION")
-                    vibrator.vibrate(pattern, 0)
+                    @Suppress("DEPRECATION") vibrator.vibrate(pattern, 0)
                 }
             }
         } else {
@@ -107,40 +163,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             tts?.speak("No detecto texto claro.", TextToSpeech.QUEUE_FLUSH, null, "error_id")
             return
         }
-
         val textoLimpio = detectedText.replace("\n", " ").trim()
-
-        // Ajuste final de velocidad a 0.9f para mejor claridad
-        tts?.setSpeechRate(0.9f)
-        tts?.setPitch(1.0f)
-
         tts?.speak(textoLimpio, TextToSpeech.QUEUE_FLUSH, null, "lectura_total")
     }
 
-    // --- MANEJO DEL CICLO DE VIDA PARA AHORRO DE BATERÍA ---
-
-    override fun onPause() {
-        super.onPause()
-        pararTodo()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        pararTodo()
-    }
-
-    private fun pararTodo() {
-        detenerVibracion()
-        tts?.stop()
-        detectedText = "" // Limpiar buffer para evitar lecturas fantasmas al volver
-    }
-
     override fun onDestroy() {
-        super.onDestroy()
         tts?.shutdown()
         vibrator.cancel()
+        super.onDestroy()
     }
 }
+
+// ... (CameraPreview y analizarImagen se mantienen igual) ...
 
 @Composable
 fun CameraPreview(onTextDetected: (String) -> Unit) {
@@ -153,7 +187,9 @@ fun CameraPreview(onTextDetected: (String) -> Unit) {
             val previewView = PreviewView(ctx)
             cameraProviderFuture.addListener({
                 val cameraProvider = cameraProviderFuture.get()
-                val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                val preview = Preview.Builder().build().also {
+                    it.setSurfaceProvider(previewView.surfaceProvider)
+                }
                 val analyzer = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build().also {
