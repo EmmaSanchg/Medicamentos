@@ -1,4 +1,4 @@
-package com.example.madicamentos
+package com.example.medicamentos
 
 import org.junit.Test
 

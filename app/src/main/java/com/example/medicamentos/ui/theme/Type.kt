@@ -1,4 +1,4 @@
-package com.example.madicamentos.ui.theme
+package com.example.medicamentos.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
